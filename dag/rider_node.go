@@ -60,9 +60,9 @@ func NewRiderNode(addr commons.Address, waveSize int, timerTimeout time.Duration
 		leaderStack:    collections.NewStack[*commons.Vertex](),
 		timer:          time.NewTimer(0),
 		timerTimeout:   timerTimeout,
-		RBcastChannel:  make(chan internal.BroadcastMessage[*commons.Vertex, commons.Round]),
-		ABcastChannel:  make(chan internal.BroadcastMessage[commons.Block, uint64]),
-		BlockToPropose: make(chan commons.Block),
+		RBcastChannel:  make(chan internal.BroadcastMessage[*commons.Vertex, commons.Round], 65535),
+		ABcastChannel:  make(chan internal.BroadcastMessage[commons.Block, uint64], 65535),
+		BlockToPropose: make(chan commons.Block, 65535),
 		log:            logger,
 	}
 	instance.peers = append(instance.peers, instance)
@@ -205,12 +205,15 @@ func (node *RiderNode) setWeakEdges(v *commons.Vertex, round commons.Round) {
 		roundSet := node.dag.GetRound(r)
 		if roundSet != nil {
 			for _, u := range roundSet.Entries() {
-				if !node.dag.Path(v, &u) {
-					v.WeakEdges = append(v.WeakEdges, commons.BaseVertex{
-						Source: u.Source,
-						Round:  u.Round,
-						Block:  u.Block,
-					})
+				for _, vs := range v.StrongEdgesValues() {
+					vss := node.dag.GetRound(vs.Round).GetBySource(vs.Source)
+					if !node.dag.Path(&vss, &u) {
+						v.WeakEdges = append(v.WeakEdges, commons.BaseVertex{
+							Source: u.Source,
+							Round:  u.Round,
+							Block:  u.Block,
+						})
+					}
 				}
 			}
 		}
@@ -253,7 +256,6 @@ func (node *RiderNode) handleTimeout() {
 		node.dag.NewRoundIfNotExists(node.round + 1)
 		v := node.createNewVertex(node.round + 1)
 		if v != nil {
-			node.dag.GetRound(v.Round).AddVertex(*v)
 			node.rBcast(v, node.round+1)
 			node.round = node.round + 1
 		}
@@ -263,18 +265,17 @@ func (node *RiderNode) handleTimeout() {
 
 func (node *RiderNode) rBcast(v *commons.Vertex, r commons.Round) {
 	for _, peer := range node.peers {
-		if peer.nodeInfo.Address != node.nodeInfo.Address {
-			clonedPeer := peer
-			go func() {
-				node.log.Debug("message rBcast to", clonedPeer.nodeInfo.Address, "v=", v, "r=", r)
-				clonedPeer.RBcastChannel <- internal.BroadcastMessage[*commons.Vertex, commons.Round]{
-					Message: v,
-					R:       r,
-					P:       node.nodeInfo.Address,
-				}
-			}()
-		}
+		clonedPeer := peer
+		go func() {
+			node.log.Debug("message rBcast to", clonedPeer.nodeInfo.Address, "v=", v, "r=", r)
+			clonedPeer.RBcastChannel <- internal.BroadcastMessage[*commons.Vertex, commons.Round]{
+				Message: v,
+				R:       r,
+				P:       node.nodeInfo.Address,
+			}
+		}()
 	}
+
 }
 
 func (node *RiderNode) aBcast(b commons.Block, r uint64) {
